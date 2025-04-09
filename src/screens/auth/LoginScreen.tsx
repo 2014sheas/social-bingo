@@ -1,13 +1,5 @@
 import React, { useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TextInput,
-  TouchableOpacity,
-  ActivityIndicator,
-  Alert,
-} from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { useAppDispatch, useAppSelector } from "../../store/hooks";
 import {
   loginStart,
@@ -15,31 +7,42 @@ import {
   loginFailure,
 } from "../../store/slices/authSlice";
 import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "../../config/firebase";
+import { auth, db } from "../../config/firebase";
+import { doc, updateDoc } from "firebase/firestore";
 import { useNavigation } from "@react-navigation/native";
-import { AuthStackParamList } from "../../navigation/types";
+import { RootStackParamList } from "../../navigation/types";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
+import AuthInput from "../../components/auth/AuthInput";
+import AuthButton from "../../components/auth/AuthButton";
+import { validateEmail, validatePassword } from "../../utils/auth/validation";
+import { handleFirebaseError } from "../../utils/auth/errorHandling";
+import { ValidationErrors } from "../../utils/auth/validation";
 
-type LoginScreenNavigationProp = NativeStackNavigationProp<
-  AuthStackParamList,
-  "Login"
->;
+type LoginScreenNavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
 const LoginScreen = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [errors, setErrors] = useState<ValidationErrors>({});
   const dispatch = useAppDispatch();
-  const { isLoading, error } = useAppSelector((state) => state.auth);
+  const { isLoading } = useAppSelector((state) => state.auth);
   const navigation = useNavigation<LoginScreenNavigationProp>();
 
+  const validateForm = () => {
+    const newErrors = {
+      email: validateEmail(email),
+      password: validatePassword(password),
+    };
+    setErrors(newErrors);
+    return !newErrors.email && !newErrors.password;
+  };
+
   const handleLogin = async () => {
-    if (!email || !password) {
-      Alert.alert("Error", "Please fill in all fields");
-      return;
-    }
+    if (!validateForm()) return;
 
     try {
       dispatch(loginStart());
+      console.log("Attempting login...");
       const userCredential = await signInWithEmailAndPassword(
         auth,
         email,
@@ -47,66 +50,78 @@ const LoginScreen = () => {
       );
       const user = userCredential.user;
 
+      console.log("Updating last login timestamp...");
+      await updateDoc(doc(db, "users", user.uid), {
+        lastLogin: new Date().toISOString(),
+      });
+
+      console.log("Login successful, navigating to MainTab...");
       dispatch(
         loginSuccess({
           id: user.uid,
           email: user.email || "",
-          username: user.displayName || user.email?.split("@")[0] || "",
+          username: user.displayName || "",
         })
       );
+      navigation.navigate("Main", { screen: "Home" });
     } catch (error: any) {
-      let errorMessage = "An error occurred during login";
-      if (error.code === "auth/invalid-email") {
-        errorMessage = "Invalid email address";
-      } else if (
-        error.code === "auth/user-not-found" ||
-        error.code === "auth/wrong-password"
-      ) {
-        errorMessage = "Invalid email or password";
-      }
-      dispatch(loginFailure(errorMessage));
+      console.log("Login error:", error);
+      handleFirebaseError(error, setErrors);
+      dispatch(
+        loginFailure(
+          "Login failed. Please check your credentials and try again."
+        )
+      );
     }
+  };
+
+  const handleRegister = () => {
+    console.log("Navigating to Register...");
+    navigation.navigate("Auth", { screen: "Register" });
+  };
+
+  const handleForgotPassword = () => {
+    console.log("Navigating to PasswordReset...");
+    navigation.navigate("Auth", { screen: "PasswordReset" });
   };
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Welcome Back!</Text>
+      <Text style={styles.title}>Welcome Back</Text>
 
-      {error && <Text style={styles.errorText}>{error}</Text>}
-
-      <TextInput
-        style={styles.input}
+      <AuthInput
         placeholder="Email"
         value={email}
-        onChangeText={setEmail}
+        onChangeText={(text) => {
+          setEmail(text);
+          setErrors((prev) => ({ ...prev, email: undefined }));
+        }}
+        error={errors.email}
         autoCapitalize="none"
         keyboardType="email-address"
       />
 
-      <TextInput
-        style={styles.input}
+      <AuthInput
         placeholder="Password"
         value={password}
-        onChangeText={setPassword}
+        onChangeText={(text) => {
+          setPassword(text);
+          setErrors((prev) => ({ ...prev, password: undefined }));
+        }}
+        error={errors.password}
         secureTextEntry
       />
 
-      <TouchableOpacity
-        style={styles.button}
-        onPress={handleLogin}
-        disabled={isLoading}
-      >
-        {isLoading ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={styles.buttonText}>Login</Text>
-        )}
-      </TouchableOpacity>
+      <AuthButton title="Login" onPress={handleLogin} loading={isLoading} />
 
       <TouchableOpacity
-        style={styles.registerLink}
-        onPress={() => navigation.navigate("Register")}
+        style={styles.forgotPasswordLink}
+        onPress={handleForgotPassword}
       >
+        <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity style={styles.registerLink} onPress={handleRegister}>
         <Text style={styles.registerText}>
           Don't have an account? Register here
         </Text>
@@ -128,32 +143,13 @@ const styles = StyleSheet.create({
     marginBottom: 30,
     textAlign: "center",
   },
-  input: {
-    height: 50,
-    borderWidth: 1,
-    borderColor: "#ddd",
-    borderRadius: 8,
-    paddingHorizontal: 15,
-    marginBottom: 15,
-    fontSize: 16,
-  },
-  button: {
-    backgroundColor: "#007AFF",
-    height: 50,
-    borderRadius: 8,
-    justifyContent: "center",
+  forgotPasswordLink: {
+    marginTop: 15,
     alignItems: "center",
-    marginTop: 10,
   },
-  buttonText: {
-    color: "#fff",
+  forgotPasswordText: {
+    color: "#007AFF",
     fontSize: 16,
-    fontWeight: "bold",
-  },
-  errorText: {
-    color: "red",
-    marginBottom: 15,
-    textAlign: "center",
   },
   registerLink: {
     marginTop: 20,
